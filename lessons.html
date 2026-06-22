@@ -314,13 +314,14 @@ for (let i = 1; i <= 7; i++) {
   const btn = document.createElement('button');
   btn.className = 'day-btn';
   btn.textContent = `Day ${i}`;
-  btn.onclick = () => startDay(i);
+  btn.dataset.day = i;
+  btn.onclick = function() { startDay(parseInt(this.dataset.day)); };
   menu.appendChild(btn);
 }
 
 function startDay(day) {
   document.querySelectorAll('.day-btn').forEach(b => b.classList.remove('sel'));
-  event.target.classList.add('sel');
+  document.querySelector(`.day-btn[data-day="${day}"]`).classList.add('sel');
 
   state.day = day;
   state.step = 0;
