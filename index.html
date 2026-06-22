@@ -25,14 +25,16 @@ button.sel{background:#0a0a0a;color:#0f0;border:1px solid #0f0}
 <button id="deal" disabled>Loading WASM…</button>
 <pre id="out">Initializing…</pre>
 
-<script src="https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist/sql-wasm.js" onload="initSqlJs({locateFile:f=>'https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist/'+f}).then(async SQL=>{
+<script src="https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist/sql-wasm.js"></script>
+<script>
+(async () => {
+  const SQL = await initSqlJs({ locateFile: f => `https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist/${f}` });
   window.SQL = SQL;
-  const base = await fetch('sql-poker.sql').then(r=>r.text());
-  window.sqlBase = base;
+  window.sqlBase = await fetch('sql-poker.sql').then(r => r.text());
   document.getElementById('deal').disabled = false;
   document.getElementById('deal').textContent = '🃏 Deal';
   document.getElementById('deal').onclick = () => play(window.mode || 2);
-});
+})();
 
 function setMode(n) {
   window.mode = n;
