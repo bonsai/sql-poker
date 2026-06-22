@@ -9,138 +9,16 @@ body{background:#0a0a0a;color:#e0e0e0;font:16px/1.6 monospace;display:flex;flex-
 h1{color:#0f0;font-size:1.4rem;margin-bottom:.5rem}
 button{background:#0f0;color:#0a0a0a;border:none;padding:.6rem 1.8rem;font:inherit;font-weight:700;cursor:pointer;margin:1rem 0;border-radius:4px}
 button:hover{background:#0c0}
+button:disabled{background:#333;color:#666;cursor:wait}
 #out{white-space:pre;background:#111;border:1px solid #331;padding:1.2rem;border-radius:6px;max-width:520px;width:100%;min-height:200px}
 .w{color:#0f0;font-weight:700}
 </style>
 <body>
 <h1>SQL-Poker</h1>
 <p>Poker in pure SQL — running in your browser via <a href="https://sql.js.org" style="color:#0f0">sql.js</a></p>
-<button id="deal" disabled>Loading SQL.js…</button>
+<button id="deal" disabled>Loading WASM…</button>
 <pre id="out">Initializing SQLite WASM…</pre>
 
-<script type="module">
-import initSqlJs from "https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist/sql-wasm.mjs";
-
-const SQL = await initSqlJs({
-  locateFile: f => `https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist/${f}`
-});
-
-const sql = await fetch("sql-poker.sql").then(r => r.text());
-
-// Remove dot-commands that sqlite3 CLI understands but sql.js doesn't
-const cleaned = sql.replace(/\.[a-z]+.*$/gm, "").trim();
-
-function runQuery(db, q) {
-  const stmt = db.prepare(q);
-  const rows = [];
-  while (stmt.step()) rows.push(stmt.getAsObject());
-  stmt.free();
-  return rows;
-}
-
-function execAll(db, q) {
-  // Split on semicolons, run each statement
-  q.split(";").map(s => s.trim()).filter(s => s.length > 0).forEach(s => {
-    try { db.run(s + ";"); } catch(e) { /* skip non-SELECT errors */ }
-  });
-}
-
-document.getElementById("deal").disabled = false;
-document.getElementById("deal").textContent = "🃏 Deal";
-
-document.getElementById("deal").onclick = () => {
-  const db = new SQL.Database();
-  db.run(cleaned);
-
-  const out = [];
-
-  // Hole cards
-  out.push("=== HOLE CARDS ===");
-  let rows = runQuery(db, "SELECT 'Player ' || h.player || ': ' || GROUP_CONCAT(c.rank || c.suit, '  ') AS line FROM hand_cards h JOIN cards c ON c.id = h.card_id GROUP BY h.player");
-  rows.forEach(r => out.push(r.line));
-
-  // Community
-  out.push("=== COMMUNITY ===");
-  rows = runQuery(db, "SELECT GROUP_CONCAT(c.rank || c.suit, '  ') AS line FROM community_cards cc JOIN cards c ON c.id = cc.card_id");
-  rows.forEach(r => out.push(r.line));
-
-  // Results — grab from the evaluation CTE
-  // We need to re-run the eval but just get the final output
-  const resultSQL = `
-    WITH
-    comm AS (SELECT card_id, ROW_NUMBER() OVER () - 1 AS ci FROM community_cards),
-    hole AS (SELECT player, card_id, ROW_NUMBER() OVER (PARTITION BY player ORDER BY card_id) - 1 AS hi FROM hand_cards),
-    p7(player, card_id, bit) AS (
-      SELECT h.player, h.card_id, h.hi FROM hole h
-      UNION ALL
-      SELECT DISTINCT h.player, cn.card_id, cn.ci + 2 FROM hole h CROSS JOIN comm cn
-    ),
-    p7c AS (SELECT p.player, p.card_id, p.bit, c.suit, c.val FROM p7 p JOIN cards c ON c.id = p.card_id),
-    sub(player, c0,c1,c2,c3,c4, s0,s1,s2,s3,s4, v0,v1,v2,v3,v4) AS (
-      SELECT a.player, a.card_id,b.card_id,c.card_id,d.card_id,e.card_id,
-             a.suit,b.suit,c.suit,d.suit,e.suit, a.val,b.val,c.val,d.val,e.val
-      FROM p7c a
-      JOIN p7c b ON b.player=a.player AND b.bit>a.bit
-      JOIN p7c c ON c.player=a.player AND c.bit>b.bit
-      JOIN p7c d ON d.player=a.player AND c.bit<d.bit
-      JOIN p7c e ON e.player=a.player AND d.bit<e.bit
-    ),
-    eval AS (
-      SELECT player, v0,v1,v2,v3,v4, s0,s1,s2,s3,s4,
-        CASE WHEN s0=s1 AND s1=s2 AND s2=s3 AND s3=s4 THEN 1 ELSE 0 END AS fl,
-        MAX(v0,MAX(v1,MAX(v2,MAX(v3,v4)))) AS mx,
-        MIN(v0,MIN(v1,MIN(v2,MIN(v3,v4)))) AS mn,
-        (SELECT COUNT(DISTINCT x) FROM (SELECT v0 x UNION SELECT v1 UNION SELECT v2 UNION SELECT v3 UNION SELECT v4)) AS uq,
-        (SELECT MAX(c) FROM (SELECT COUNT(*) AS c FROM (SELECT v0 AS vi UNION ALL SELECT v1 UNION ALL SELECT v2 UNION ALL SELECT v3 UNION ALL SELECT v4) GROUP BY vi)) AS tf,
-        (SELECT vi FROM (SELECT vi, COUNT(*) AS c FROM (SELECT v0 vi UNION ALL SELECT v1 UNION ALL SELECT v2 UNION ALL SELECT v3 UNION ALL SELECT v4) GROUP BY vi ORDER BY COUNT(*) DESC, vi DESC LIMIT 1)) AS tv,
-        (SELECT vi FROM (SELECT vi, COUNT(*) AS c, ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC, vi DESC) AS rn FROM (SELECT v0 vi UNION ALL SELECT v1 UNION ALL SELECT v2 UNION ALL SELECT v3 UNION ALL SELECT v4) GROUP BY vi) WHERE rn=2 LIMIT 1) AS sv,
-        (SELECT c FROM (SELECT vi, COUNT(*) AS c, ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC, vi DESC) AS rn FROM (SELECT v0 vi UNION ALL SELECT v1 UNION ALL SELECT v2 UNION ALL SELECT v3 UNION ALL SELECT v4) GROUP BY vi) WHERE rn=2 LIMIT 1) AS sf
-      FROM sub
-    ),
-    ranked AS (
-      SELECT player, tf, sf, tv, sv,
-        CASE
-          WHEN fl=1 AND ((mx-mn=4 AND uq=5) OR (mx=14 AND mn=2 AND uq=5
-            AND (SELECT COUNT(*) FROM (SELECT v0 x UNION ALL SELECT v1 UNION ALL SELECT v2 UNION ALL SELECT v3 UNION ALL SELECT v4) WHERE x IN (14,2,3,4,5))=5)) THEN 9
-          WHEN tf=4 THEN 8
-          WHEN tf=3 AND sf=2 THEN 7
-          WHEN fl=1 THEN 6
-          WHEN uq=5 AND mx-mn=4 THEN 5
-          WHEN uq=5 AND mx=14 AND (SELECT COUNT(*) FROM (SELECT v0 x UNION ALL SELECT v1 UNION ALL SELECT v2 UNION ALL SELECT v3 UNION ALL SELECT v4) WHERE x IN (14,2,3,4,5))=5 THEN 5
-          WHEN tf=3 THEN 4
-          WHEN tf=2 AND sf=2 THEN 3
-          WHEN tf=2 THEN 2
-          ELSE 1
-        END AS hr,
-        COALESCE(tv,0)*10000 + COALESCE(sv,0)*100 +
-        COALESCE((SELECT MAX(x) FROM (SELECT v0 x UNION ALL SELECT v1 UNION ALL SELECT v2 UNION ALL SELECT v3 UNION ALL SELECT v4)
-         WHERE x != COALESCE((SELECT vi FROM (SELECT vi FROM (SELECT v0 vi UNION ALL SELECT v1 UNION ALL SELECT v2 UNION ALL SELECT v3 UNION ALL SELECT v4) GROUP BY vi ORDER BY COUNT(*) DESC, vi DESC LIMIT 1)),-1)),0) AS tb
-      FROM eval
-    ),
-    best AS (SELECT player, hr, tb, ROW_NUMBER() OVER (PARTITION BY player ORDER BY hr DESC, tb DESC) AS rn FROM ranked),
-    pb AS (SELECT player, hr, tb FROM best WHERE rn=1),
-    hn AS (SELECT player, hr, tb, CASE hr
-      WHEN 9 THEN 'Straight Flush' WHEN 8 THEN 'Four of a Kind' WHEN 7 THEN 'Full House'
-      WHEN 6 THEN 'Flush' WHEN 5 THEN 'Straight' WHEN 4 THEN 'Three of a Kind'
-      WHEN 3 THEN 'Two Pair' WHEN 2 THEN 'One Pair' WHEN 1 THEN 'High Card'
-    END AS hand_name FROM pb)
-    SELECT line FROM (
-      SELECT '  Player ' || player || ' → ' || hand_name AS line, 1 AS o, hr, tb FROM hn
-      UNION ALL
-      SELECT * FROM (SELECT '🏆 WINNER:  Player ' || player || ' → ' || hand_name, 2, hr, tb FROM hn ORDER BY hr DESC, tb DESC LIMIT 1)
-    ) ORDER BY o, hr DESC, tb DESC
-  `;
-
-  try {
-    rows = runQuery(db, resultSQL);
-    rows.forEach(r => out.push(r.line));
-  } catch(e) {
-    out.push("Error: " + e.message);
-  }
-
-  document.getElementById("out").textContent = out.join("\n");
-  db.close();
-};
-</script>
+<script src="https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist/sql-wasm.js" onload="initSqlJs({locateFile:f=>'https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist/'+f}).then(async SQL=>{window._SQL=SQL;const sql=await fetch('sql-poker.sql').then(r=>r.text());function runQuery(db,q){const s=db.prepare(q);const rows=[];while(s.step())rows.push(s.getAsObject());s.free();return rows}document.getElementById('deal').disabled=false;document.getElementById('deal').textContent='🃏 Deal';document.getElementById('deal').onclick=()=>{const db=new SQL.Database();db.run(sql);const out=[];out.push('=== HOLE CARDS ===');let rows=runQuery(db,'SELECT \'Player \' || h.player || \': \' || GROUP_CONCAT(c.rank || c.suit, \'  \') AS line FROM hand_cards h JOIN cards c ON c.id=h.card_id GROUP BY h.player');rows.forEach(r=>out.push(r.line));out.push('=== COMMUNITY ===');rows=runQuery(db,'SELECT GROUP_CONCAT(c.rank || c.suit, \'  \') AS line FROM community_cards cc JOIN cards c ON c.id=cc.card_id');rows.forEach(r=>out.push(r.line));const rSQL='WITH comm AS(SELECT card_id,ROW_NUMBER()OVER()-1 AS ci FROM community_cards),hole AS(SELECT player,card_id,ROW_NUMBER()OVER(PARTITION BY player ORDER BY card_id)-1 AS hi FROM hand_cards),p7(player,card_id,bit)AS(SELECT h.player,h.card_id,h.hi FROM hole h UNION ALL SELECT DISTINCT h.player,cn.card_id,cn.ci+2 FROM hole h CROSS JOIN comm cn),p7c AS(SELECT p.player,p.card_id,p.bit,c.suit,c.val FROM p7 p JOIN cards c ON c.id=p.card_id),sub(player,c0,c1,c2,c3,c4,s0,s1,s2,s3,s4,v0,v1,v2,v3,v4)AS(SELECT a.player,a.card_id,b.card_id,c.card_id,d.card_id,e.card_id,a.suit,b.suit,c.suit,d.suit,e.suit,a.val,b.val,c.val,d.val,e.val FROM p7c a JOIN p7c b ON b.player=a.player AND b.bit>a.bit JOIN p7c c ON c.player=a.player AND c.bit>b.bit JOIN p7c d ON d.player=a.player AND c.bit<d.bit JOIN p7c e ON e.player=a.player AND d.bit<e.bit),eval AS(SELECT player,v0,v1,v2,v3,v4,s0,s1,s2,s3,s4,CASE WHEN s0=s1 AND s1=s2 AND s2=s3 AND s3=s4 THEN 1 ELSE 0 END AS fl,MAX(v0,MAX(v1,MAX(v2,MAX(v3,v4))))AS mx,MIN(v0,MIN(v1,MIN(v2,MIN(v3,v4))))AS mn,(SELECT COUNT(DISTINCT x)FROM(SELECT v0 x UNION SELECT v1 UNION SELECT v2 UNION SELECT v3 UNION SELECT v4))AS uq,(SELECT MAX(c)FROM(SELECT COUNT(*)AS c FROM(SELECT v0 AS vi UNION ALL SELECT v1 UNION ALL SELECT v2 UNION ALL SELECT v3 UNION ALL SELECT v4)GROUP BY vi))AS tf,(SELECT vi FROM(SELECT vi,COUNT(*)AS c FROM(SELECT v0 vi UNION ALL SELECT v1 UNION ALL SELECT v2 UNION ALL SELECT v3 UNION ALL SELECT v4)GROUP BY vi ORDER BY COUNT(*)DESC,vi DESC LIMIT 1))AS tv,(SELECT vi FROM(SELECT vi,COUNT(*)AS c,ROW_NUMBER()OVER(ORDER BY COUNT(*)DESC,vi DESC)AS rn FROM(SELECT v0 vi UNION ALL SELECT v1 UNION ALL SELECT v2 UNION ALL SELECT v3 UNION ALL SELECT v4)GROUP BY vi)WHERE rn=2 LIMIT 1)AS sv,(SELECT c FROM(SELECT vi,COUNT(*)AS c,ROW_NUMBER()OVER(ORDER BY COUNT(*)DESC,vi DESC)AS rn FROM(SELECT v0 vi UNION ALL SELECT v1 UNION ALL SELECT v2 UNION ALL SELECT v3 UNION ALL SELECT v4)GROUP BY vi)WHERE rn=2 LIMIT 1)AS sf FROM sub),ranked AS(SELECT player,tf,sf,tv,sv,CASE WHEN fl=1 AND((mx-mn=4 AND uq=5)OR(mx=14 AND mn=2 AND uq=5 AND(SELECT COUNT(*)FROM(SELECT v0 x UNION ALL SELECT v1 UNION ALL SELECT v2 UNION ALL SELECT v3 UNION ALL SELECT v4)WHERE x IN(14,2,3,4,5))=5))THEN 9 WHEN tf=4 THEN 8 WHEN tf=3 AND sf=2 THEN 7 WHEN fl=1 THEN 6 WHEN uq=5 AND mx-mn=4 THEN 5 WHEN uq=5 AND mx=14 AND(SELECT COUNT(*)FROM(SELECT v0 x UNION ALL SELECT v1 UNION ALL SELECT v2 UNION ALL SELECT v3 UNION ALL SELECT v4)WHERE x IN(14,2,3,4,5))=5 THEN 5 WHEN tf=3 THEN 4 WHEN tf=2 AND sf=2 THEN 3 WHEN tf=2 THEN 2 ELSE 1 END AS hr,COALESCE(tv,0)*10000+COALESCE(sv,0)*100+COALESCE((SELECT MAX(x)FROM(SELECT v0 x UNION ALL SELECT v1 UNION ALL SELECT v2 UNION ALL SELECT v3 UNION ALL SELECT v4)WHERE x!=COALESCE((SELECT vi FROM(SELECT vi FROM(SELECT v0 vi UNION ALL SELECT v1 UNION ALL SELECT v2 UNION ALL SELECT v3 UNION ALL SELECT v4)GROUP BY vi ORDER BY COUNT(*)DESC,vi DESC LIMIT 1)),-1)),0)AS tb FROM eval),best AS(SELECT player,hr,tb,ROW_NUMBER()OVER(PARTITION BY player ORDER BY hr DESC,tb DESC)AS rn FROM ranked),pb AS(SELECT player,hr,tb FROM best WHERE rn=1),hn AS(SELECT player,hr,tb,CASE hr WHEN 9 THEN \'Straight Flush\' WHEN 8 THEN \'Four of a Kind\' WHEN 7 THEN \'Full House\' WHEN 6 THEN \'Flush\' WHEN 5 THEN \'Straight\' WHEN 4 THEN \'Three of a Kind\' WHEN 3 THEN \'Two Pair\' WHEN 2 THEN \'One Pair\' WHEN 1 THEN \'High Card\' END AS hand_name FROM pb)SELECT line FROM(SELECT \'  Player \'||player||\' → \'||hand_name AS line,1 AS o,hr,tb FROM hn UNION ALL SELECT * FROM(SELECT \'WINNER:  Player \'||player||\' → \'||hand_name,2,hr,tb FROM hn ORDER BY hr DESC,tb DESC LIMIT 1))ORDER BY o,hr DESC,tb DESC';try{rows=runQuery(db,rSQL);rows.forEach(r=>out.push(r.line))}catch(e){out.push('Error: '+e.message)}document.getElementById('out').textContent=out.join('\\n');db.close()}});"></script>
 </body>
 </html>
