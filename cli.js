@@ -1,102 +1,132 @@
 #!/usr/bin/env node
-// sql-poker: Texas Hold'em in pure SQL — interactive CLI
-// Usage: sql-poker [--players 2|4] [--verbose]
+// sql-poker: Texas Hold'em in pure SQL — watch SQL flow
+// Usage: sql-poker [--players 2|4] [--speed 500]
 
-const { DatabaseSync } = require('node:sqlite');
-const fs = require('fs');
-const path = require('path');
-const readline = require('readline');
+import { DatabaseSync } from 'node:sqlite';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import { createInterface } from 'readline';
+import { fileURLToPath } from 'url';
+
+const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
 const args = process.argv.slice(2);
 const players = parseInt(args[args.indexOf('--players') + 1]) || 2;
-const verbose = args.includes('--verbose') || args.includes('-v');
+const speed = parseInt(args[args.indexOf('--speed') + 1]) || 800;
 
-const sqlPath = path.join(__dirname, 'sql-poker.sql');
-const fullSQL = fs.readFileSync(sqlPath, 'utf8');
+const sqlPath = join(__dirname, 'sql-poker.sql');
+const fullSQL = readFileSync(sqlPath, 'utf8');
 
 const handLimit = players * 2;
 const commStart = handLimit;
 const commEnd = handLimit + 5;
 
-function exec(db, label, sql) {
-  if (verbose) {
-    const trimmed = sql.trim().replace(/\s+/g, ' ');
-    console.log(`\n── ${label} ──`);
-    console.log(`SQL: ${trimmed.length > 120 ? trimmed.substring(0, 120) + '...' : trimmed}`);
-  }
-  db.exec(sql);
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function exec(db, sql) { db.exec(sql); }
+
+function query(db, sql) {
+  return db.prepare(sql).all().map(row => ({ ...row }));
 }
 
-function query(db, label, sql) {
-  const rows = db.prepare(sql).all();
-  if (verbose) {
-    console.log(`\n── ${label} ──`);
-    console.log(`SQL: ${sql.trim().replace(/\s+/g, ' ')}`);
-    for (const r of rows) console.log(`  → ${JSON.stringify(r)}`);
-  }
-  return rows;
+function logSQL(label, sql) {
+  const trimmed = sql.trim().replace(/\s+/g, ' ');
+  console.log(`\n${label}`);
+  console.log(`  SQL: ${trimmed.length > 100 ? trimmed.substring(0, 100) + '...' : trimmed}`);
 }
 
-function runGame(gameNum) {
+function logRows(rows, maxRows = 10) {
+  const show = rows.slice(0, maxRows);
+  for (const r of show) {
+    const vals = Object.entries(r).map(([k, v]) => `${k}=${v}`).join(', ');
+    console.log(`    → ${vals}`);
+  }
+  if (rows.length > maxRows) console.log(`    ... +${rows.length - maxRows} more rows`);
+}
+
+async function runGame(gameNum) {
   const db = new DatabaseSync(':memory:');
 
-  // ── Step 1: Create & populate cards ──
+  console.log(`\n${'═'.repeat(50)}`);
+  console.log(`  SQL-Poker — Game ${gameNum} (${players}P)`);
+  console.log(`${'═'.repeat(50)}`);
+
+  // ── Step 1: 配る (Deal hole cards) ──
+  console.log(`\n┌── 1. 配る (Deal) ──`);
+
   const cardsCreateSQL = fullSQL.match(/CREATE TABLE cards[\s\S]*?;/)[0];
   const cardsInsertSQL = fullSQL.match(/INSERT INTO cards[\s\S]*?;/)[0];
-  exec(db, '1a. CREATE cards', cardsCreateSQL);
-  exec(db, '1b. INSERT cards (52 rows)', cardsInsertSQL);
+  logSQL('  CREATE cards', cardsCreateSQL);
+  exec(db, cardsCreateSQL);
+  await sleep(speed);
 
+  logSQL('  INSERT 52 cards', cardsInsertSQL);
+  exec(db, cardsInsertSQL);
   const cardCount = db.prepare('SELECT COUNT(*) as n FROM cards').get();
-  if (verbose) console.log(`  → ${cardCount.n} cards created`);
+  console.log(`    → ${cardCount.n} cards created`);
+  await sleep(speed);
 
-  // ── Step 2: Shuffle ──
+  // ── Step 2: 切る (Shuffle / Cut) ──
+  console.log(`\n┌── 2. 切る (Shuffle) ──`);
+
   const deckCreateSQL = fullSQL.match(/CREATE TABLE deck[\s\S]*?;/)[0];
   const deckInsertSQL = fullSQL.match(/INSERT INTO deck[\s\S]*?;/)[0];
-  exec(db, '2a. CREATE deck', deckCreateSQL);
-  exec(db, '2b. SHUFFLE deck', deckInsertSQL);
+  logSQL('  CREATE deck', deckCreateSQL);
+  exec(db, deckCreateSQL);
+  await sleep(speed);
 
-  if (verbose) {
-    const deckRows = db.prepare('SELECT d.pos, c.rank, c.suit FROM deck d JOIN cards c ON c.id=d.card_id ORDER BY d.pos LIMIT 10').all();
-    console.log('  → First 10 cards in deck:');
-    for (const r of deckRows) console.log(`     pos=${r.pos}: ${r.rank}${r.suit}`);
-  }
+  logSQL('  SHUFFLE: ORDER BY RANDOM()', deckInsertSQL);
+  exec(db, deckInsertSQL);
 
-  // ── Step 3: Deal ──
+  const deckPreview = query(db, `
+    SELECT d.pos, c.rank, c.suit FROM deck d JOIN cards c ON c.id=d.card_id ORDER BY d.pos LIMIT 8
+  `);
+  console.log('    → Deck (first 8):');
+  for (const r of deckPreview) console.log(`       pos=${r.pos}: ${r.rank}${r.suit}`);
+  await sleep(speed);
+
+  // ── Step 3: もらう (Deal community / Draw) ──
+  console.log(`\n┌── 3. もらう (Draw community cards) ──`);
+
   db.exec(fullSQL.match(/CREATE TABLE hand_cards[\s\S]*?;/)[0]);
   db.exec(fullSQL.match(/CREATE TABLE community_cards[\s\S]*?;/)[0]);
 
   const handDealSQL = `INSERT INTO hand_cards (player, card_id) SELECT d.pos / 2, d.card_id FROM deck d WHERE d.pos < ${handLimit}`;
-  const commDealSQL = `INSERT INTO community_cards (card_id) SELECT d.card_id FROM deck d WHERE d.pos >= ${commStart} AND d.pos < ${commEnd}`;
+  logSQL(`  DEAL ${players * 2} cards to ${players} players`, handDealSQL);
+  exec(db, handDealSQL);
+  await sleep(speed);
 
-  exec(db, '3a. DEAL hand_cards', handDealSQL);
-  exec(db, '3b. DEAL community_cards', commDealSQL);
+  const commDealSQL = `INSERT INTO community_cards (card_id) SELECT d.card_id FROM deck d WHERE d.pos >= ${commStart} AND d.pos < ${commEnd}`;
+  logSQL('  DEAL 5 community cards', commDealSQL);
+  exec(db, commDealSQL);
+  await sleep(speed);
 
   // Show dealt cards
-  const holeRows = db.prepare(`
+  const holeRows = query(db, `
     SELECT h.player, c.rank, c.suit, c.val
     FROM hand_cards h JOIN cards c ON c.id = h.card_id
     ORDER BY h.player, c.val DESC
-  `).all();
-
+  `);
   const grouped = {};
   for (const r of holeRows) {
     if (!grouped[r.player]) grouped[r.player] = [];
     grouped[r.player].push(r.rank + r.suit);
   }
 
-  const commCards = db.prepare(`
+  const commCards = query(db, `
     SELECT c.rank, c.suit FROM community_cards cc JOIN cards c ON c.id = cc.card_id
-  `).all().map(c => c.rank + c.suit);
+  `).map(c => c.rank + c.suit);
 
-  if (verbose) {
-    console.log('\n── 3c. DEAL result ──');
-    for (const [p, cards] of Object.entries(grouped)) {
-      console.log(`  → P${p}: ${cards.join(' ')}`);
-    }
-    console.log(`  → Board: ${commCards.join(' ')}`);
+  console.log('    → Hole cards:');
+  for (const [p, cards] of Object.entries(grouped)) {
+    console.log(`       P${p}: ${cards.join('  ')}`);
   }
+  console.log(`    → Board: ${commCards.join('  ')}`);
+  await sleep(speed);
 
-  // ── Step 4: Evaluate ──
+  // ── Step 4: 役判定 (Evaluate) ──
+  console.log(`\n┌── 4. 役判定 (Evaluate) ──`);
+
   const evalCTE = `WITH
 comm AS (SELECT card_id, ROW_NUMBER() OVER () - 1 AS ci FROM community_cards),
 hole AS (SELECT player, card_id, ROW_NUMBER() OVER (PARTITION BY player ORDER BY card_id) - 1 AS hi FROM hand_cards),
@@ -155,51 +185,43 @@ hn AS (SELECT player, hr, tb, CASE hr
   WHEN 3 THEN 'Two Pair' WHEN 2 THEN 'One Pair' WHEN 1 THEN 'High Card'
 END AS hand_name FROM pb)`;
 
-  if (verbose) {
-    console.log('\n── 4. EVAL ──');
-    console.log('SQL: WITH comm AS (...), hole AS (...), p7 AS (...), sub AS (...), eval AS (...)');
-    console.log('     → C(7,5)=20 subsets per player, scored by hand rank');
-  }
+  logSQL('  EVAL: C(7,5)=20 subsets per player', evalCTE);
+  await sleep(speed);
 
-  // ── Step 5: Results ──
-  const results = db.prepare(`
+  const results = query(db, `
     ${evalCTE}
     SELECT line FROM (
       SELECT '  P' || player || ' → ' || hand_name AS line, 1 AS o, hr, tb FROM hn
       UNION ALL
       SELECT * FROM (SELECT '🏆 P' || player || ' → ' || hand_name, 2, hr, tb FROM hn ORDER BY hr DESC, tb DESC LIMIT 1)
     ) ORDER BY o, hr DESC, tb DESC
-  `).all();
+  `);
 
-  // ── Output ──
-  console.log(`\n═══════════════════════════════════════`);
-  console.log(`  SQL-Poker — Game ${gameNum} (${players}P)`);
-  console.log(`═══════════════════════════════════════`);
+  console.log('    → Results:');
+  for (const r of results) console.log(`       ${r.line}`);
 
-  console.log('\n📍 HOLE:');
-  for (const [p, cards] of Object.entries(grouped)) {
-    console.log(`   P${p}: ${cards.join('  ')}`);
-  }
-
-  console.log(`\n📍 BOARD: ${commCards.join('  ')}`);
-
-  console.log('\n📍 RESULT:');
-  for (const r of results) console.log(`   ${r.line}`);
+  console.log(`\n${'─'.repeat(50)}`);
 }
 
 // Interactive loop
 let gameNum = 1;
-const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+const rl = createInterface({ input: process.stdin, output: process.stdout });
 
-console.log(`SQL-Poker (${players}P) — Enter to deal, 'q' to quit, '-v' for verbose`);
+console.log(`SQL-Poker (${players}P) — Enter to deal, 'q' to quit`);
 
 function prompt() {
-  rl.question('> ', (input) => {
-    if (input.trim().toLowerCase() === 'q') { console.log('Bye!'); rl.close(); return; }
-    runGame(gameNum++);
+  rl.question('> ', async (input) => {
+    if (input.trim().toLowerCase() === 'q') {
+      console.log('Bye!');
+      rl.close();
+      return;
+    }
+    await runGame(gameNum++);
     prompt();
   });
 }
 
-runGame(gameNum++);
+rl.on('close', () => process.exit(0));
+
+await runGame(gameNum++);
 prompt();
