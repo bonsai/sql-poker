@@ -5,24 +5,43 @@
 <title>SQL-Poker</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#0a0a0a;color:#e0e0e0;font:14px/1.6 monospace;display:flex;flex-direction:column;align-items:center;min-height:100vh;padding:2rem}
-h1{color:#0f0;font-size:1.3rem;margin-bottom:.3rem}
-.sub{color:#888;margin-bottom:1rem}
-button{background:#0f0;color:#0a0a0a;border:none;padding:.5rem 1.4rem;font:inherit;font-weight:700;cursor:pointer;margin:.4rem;border-radius:4px}
-button:hover{background:#0c0}
-button:disabled{background:#333;color:#666;cursor:wait}
-button.sel{background:#0a0a0a;color:#0f0;border:1px solid #0f0}
-#out{white-space:pre-wrap;background:#111;border:1px solid #331;padding:1rem;border-radius:6px;max-width:480px;width:100%;min-height:180px;overflow:auto}
+body{background:#0a0a0a;color:#e0e0e0;font:14px/1.5 monospace;display:flex;flex-direction:column;align-items:center;min-height:100vh;padding:1.5rem}
+h1{color:#0f0;font-size:1.2rem;margin-bottom:.2rem}
+.sub{color:#666;margin-bottom:.8rem;font-size:.85rem}
+.sub a{color:#0f0;text-decoration:none}
+.modes{display:flex;gap:.4rem;margin-bottom:.6rem}
+.modes button{background:#1a1a1a;color:#888;border:1px solid #333;padding:.4rem 1rem;font:inherit;cursor:pointer;border-radius:4px;font-size:.85rem}
+.modes button.sel{background:#0f0;color:#0a0a0a;border-color:#0f0;font-weight:700}
+#deal{background:#0f0;color:#0a0a0a;border:none;padding:.5rem 1.5rem;font:inherit;font-weight:700;cursor:pointer;border-radius:4px;margin-bottom:1rem;font-size:.9rem}
+#deal:hover{background:#0c0}
+#deal:disabled{background:#333;color:#666;cursor:wait}
+.card{background:#111;border:1px solid #222;border-radius:8px;margin-bottom:.8rem;overflow:hidden;max-width:420px;width:100%}
+.card-hdr{background:#1a1a1a;padding:.5rem .8rem;font-size:.75rem;color:#888;border-bottom:1px solid #222;letter-spacing:.05em;text-transform:uppercase}
+.card-body{padding:.6rem .8rem}
+.row{display:flex;align-items:center;gap:.4rem;padding:.25rem 0;border-bottom:1px solid #1a1a1a}
+.row:last-child{border-bottom:none}
+.p-label{color:#888;min-width:2.5rem;font-size:.8rem}
+.cards{display:flex;gap:.2rem}
+.card-suit{display:inline-flex;align-items:center;justify-content:center;width:28px;height:36px;background:#fff;border-radius:4px;font-weight:700;font-size:.85rem;color:#000;border:1px solid #ddd}
+.card-suit.r{color:#c00}
+.card-suit.b{color:#000}
+.board{display:flex;gap:.3rem;flex-wrap:wrap}
+.board .card-suit{width:32px;height:40px;font-size:.9rem}
+.result-row{display:flex;justify-content:space-between;align:center;padding:.3rem .8rem;border-bottom:1px solid #1a1a1a;font-size:.85rem}
+.result-row:last-child{border-bottom:none}
+.result-row.winner{background:#0a2a0a;border-left:3px solid #0f0}
+.hand-name{color:#0f0;font-weight:700}
+.p-name{color:#aaa;min-width:2rem}
 </style>
 <body>
 <h1>SQL-Poker</h1>
-<p class="sub">Pure SQL poker — powered by <a href="https://sql.js.org" style="color:#0f0">sql.js</a> WASM</p>
-<p style="margin-bottom:.5rem">
-  <button id="b2" class="sel" onclick="setMode(2)">2P Heads-up</button>
-  <button id="b4" onclick="setMode(4)">4P Full</button>
-</p>
-<button id="deal" disabled>Loading WASM…</button>
-<pre id="out">Initializing…</pre>
+<p class="sub">Pure SQL poker — <a href="https://sql.js.org">sql.js</a> WASM</p>
+<div class="modes">
+  <button id="b2" class="sel" onclick="setMode(2)">2P</button>
+  <button id="b4" onclick="setMode(4)">4P</button>
+</div>
+<button id="deal" disabled>Loading…</button>
+<div id="out"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist/sql-wasm.js"></script>
 <script>
@@ -49,6 +68,11 @@ function runQuery(db, q) {
   return rows;
 }
 
+function cardHTML(rank, suit) {
+  const isRed = suit === '♥' || suit === '♦';
+  return `<span class="card-suit ${isRed ? 'r' : 'b'}">${rank}${suit}</span>`;
+}
+
 function play(players) {
   const handLimit = players * 2;
   const commStart = handLimit;
@@ -67,7 +91,7 @@ function play(players) {
   const db = new window.SQL.Database();
   db.run(sql);
 
-  // Hole cards — concise
+  // Hole cards
   const holeRows = runQuery(db,
     `SELECT h.player, c.rank, c.suit, c.val
      FROM hand_cards h JOIN cards c ON c.id = h.card_id
@@ -76,22 +100,15 @@ function play(players) {
   const grouped = {};
   for (const r of holeRows) {
     if (!grouped[r.player]) grouped[r.player] = [];
-    grouped[r.player].push(r.rank + r.suit);
+    grouped[r.player].push({ rank: r.rank, suit: r.suit });
   }
 
-  const out = [];
-  out.push('HOLE:');
-  for (const [p, cards] of Object.entries(grouped)) {
-    out.push(`  P${p}: ${cards.join(' ')}`);
-  }
-
-  // Community — concise
+  // Community
   const commCards = runQuery(db,
     `SELECT c.rank, c.suit FROM community_cards cc JOIN cards c ON c.id = cc.card_id`
-  ).map(c => c.rank + c.suit);
-  out.push(`BOARD: ${commCards.join(' ')}`);
+  );
 
-  // Results — concise
+  // Results
   const rSQL = `WITH
   comm AS (SELECT card_id, ROW_NUMBER() OVER () - 1 AS ci FROM community_cards),
   hole AS (SELECT player, card_id, ROW_NUMBER() OVER (PARTITION BY player ORDER BY card_id) - 1 AS hi FROM hand_cards),
@@ -149,21 +166,35 @@ function play(players) {
     WHEN 6 THEN 'Flush' WHEN 5 THEN 'Straight' WHEN 4 THEN 'Three of a Kind'
     WHEN 3 THEN 'Two Pair' WHEN 2 THEN 'One Pair' WHEN 1 THEN 'High Card'
   END AS hand_name FROM pb)
-  SELECT line FROM (
-    SELECT '  P' || player || ' → ' || hand_name AS line, 1 AS o, hr, tb FROM hn
-    UNION ALL
-    SELECT * FROM (SELECT '🏆 P' || player || ' → ' || hand_name, 2, hr, tb FROM hn ORDER BY hr DESC, tb DESC LIMIT 1)
-  ) ORDER BY o, hr DESC, tb DESC`;
+  SELECT player, hand_name, hr, tb FROM hn ORDER BY hr DESC, tb DESC`;
 
-  try {
-    const results = runQuery(db, rSQL);
-    out.push('RESULT:');
-    results.forEach(r => out.push(r.line));
-  } catch(e) {
-    out.push('Error: ' + e.message);
+  const results = runQuery(db, rSQL);
+  const winner = results[0]; // first = strongest
+
+  // Build HTML
+  let html = '';
+
+  // Hole cards card
+  html += '<div class="card"><div class="card-hdr">Hole Cards</div><div class="card-body">';
+  for (const [p, cards] of Object.entries(grouped)) {
+    const cardsHtml = cards.map(c => cardHTML(c.rank, c.suit)).join('');
+    html += `<div class="row"><span class="p-label">P${p}</span><div class="cards">${cardsHtml}</div></div>`;
   }
+  html += '</div></div>';
 
-  document.getElementById('out').textContent = out.join('\n');
+  // Board card
+  const boardHtml = commCards.map(c => cardHTML(c.rank, c.suit)).join('');
+  html += `<div class="card"><div class="card-hdr">Board</div><div class="card-body"><div class="board">${boardHtml}</div></div></div>`;
+
+  // Results card
+  html += '<div class="card"><div class="card-hdr">Result</div>';
+  for (const r of results) {
+    const isWin = r.player === winner.player && r.hr === winner.hr;
+    html += `<div class="result-row ${isWin ? 'winner' : ''}"><span class="p-name">P${r.player}</span><span class="hand-name">${r.hand_name}</span></div>`;
+  }
+  html += '</div>';
+
+  document.getElementById('out').innerHTML = html;
   db.close();
 }
 </script>
