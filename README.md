@@ -4,7 +4,7 @@
 
 No Python. No Ruby. No runtime. Just SQL.
 
-**[▶ Play in your browser](https://YOUR_USERNAME.github.io/sql-poker/)** (GitHub Pages)
+**[▶ Play in your browser](https://bonsai.github.io/sql-poker/)** (GitHub Pages)
 
 ```bash
 sqlite3 :memory: < sql-poker.sql
@@ -24,7 +24,7 @@ sqlite3 :memory: < sql-poker.sql
 # Save state for debugging
 sqlite3 poker.db < sql-poker.sql
 ```
-[Live Demo](YOUR_USERNAME.github.io/sql-poker)
+[Live Demo](https://bonsai.github.io/sql-poker/)
 
 ### Sample Output
 ```
