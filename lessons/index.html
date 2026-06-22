@@ -45,10 +45,8 @@ h1{color:#0f0;font-size:1.3rem;text-align:center;margin-bottom:.3rem}
 </div>
 <div class="footer">Powered by sql.js WASM — 7日でわかるSQL</div>
 
+<script src="https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist/sql-wasm.js"></script>
 <script type="module">
-const sqlMod = await import("https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist/sql-wasm.js");
-const initSqlJs = sqlMod.default;
-
 const SQL = await initSqlJs({ locateFile: f => `https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist/${f}` });
 const sqlText = await fetch("sql-poker.sql").then(r => r.text());
 
