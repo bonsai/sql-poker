@@ -1,0 +1,7 @@
+{
+  "name": "sql-poker",
+  "version": "1.0.0",
+  "description": "Texas Hold'em poker engine in pure SQL",
+  "bin": { "sql-poker": "./cli.js" },
+  "engines": { "node": ">=22.5.0" }
+}

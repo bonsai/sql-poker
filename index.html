@@ -13,7 +13,6 @@ button:hover{background:#0c0}
 button:disabled{background:#333;color:#666;cursor:wait}
 button.sel{background:#0a0a0a;color:#0f0;border:1px solid #0f0}
 #out{white-space:pre-wrap;background:#111;border:1px solid #331;padding:1rem;border-radius:6px;max-width:480px;width:100%;min-height:180px;overflow:auto}
-.win{color:#0f0;font-weight:700}
 </style>
 <body>
 <h1>SQL-Poker</h1>
@@ -38,8 +37,8 @@ button.sel{background:#0a0a0a;color:#0f0;border:1px solid #0f0}
 
 function setMode(n) {
   window.mode = n;
-  document.getElementById('b2').className = n===2 ? 'sel' : '';
-  document.getElementById('b4').className = n===4 ? 'sel' : '';
+  document.getElementById('b2').className = n === 2 ? 'sel' : '';
+  document.getElementById('b4').className = n === 4 ? 'sel' : '';
 }
 
 function runQuery(db, q) {
@@ -51,44 +50,48 @@ function runQuery(db, q) {
 }
 
 function play(players) {
-  // Patch deal counts: 2p = 4 cards + 5 community, 4p = 8 cards + 5 community
-  const handDeal = players === 2
-    ? "SELECT d.pos / 2, d.card_id FROM deck d WHERE d.pos < 4"
-    : "SELECT d.pos / 2, d.card_id FROM deck d WHERE d.pos < 8";
-  const commDeal = players === 2
-    ? "SELECT d.card_id FROM deck d WHERE d.pos >= 4 AND d.pos < 9"
-    : "SELECT d.card_id FROM deck d WHERE d.pos >= 8 AND d.pos < 13";
+  const handLimit = players * 2;
+  const commStart = handLimit;
+  const commEnd = handLimit + 5;
 
   let sql = window.sqlBase;
-  // Replace the deal INSERTs
   sql = sql.replace(
     /SELECT d\.pos \/ 2, d\.card_id FROM deck d WHERE d\.pos < \d+/,
-    handDeal.replace('2, d.card_id', '2, d.card_id').replace(', d.card_id', ', d.card_id')
+    `SELECT d.pos / 2, d.card_id FROM deck d WHERE d.pos < ${handLimit}`
   );
   sql = sql.replace(
     /SELECT d\.card_id FROM deck d WHERE d\.pos >= \d+ AND d\.pos < \d+/,
-    commDeal
+    `SELECT d.card_id FROM deck d WHERE d.pos >= ${commStart} AND d.pos < ${commEnd}`
   );
 
   const db = new window.SQL.Database();
   db.run(sql);
 
+  // Hole cards — concise
+  const holeRows = runQuery(db,
+    `SELECT h.player, c.rank, c.suit, c.val
+     FROM hand_cards h JOIN cards c ON c.id = h.card_id
+     ORDER BY h.player, c.val DESC`
+  );
+  const grouped = {};
+  for (const r of holeRows) {
+    if (!grouped[r.player]) grouped[r.player] = [];
+    grouped[r.player].push(r.rank + r.suit);
+  }
+
   const out = [];
-  out.push('=== HOLE CARDS ===');
-  let rows = runQuery(db,
-    `SELECT 'Player ' || h.player || ': ' ||
-            GROUP_CONCAT(c.rank || c.suit, '  ') AS line
-     FROM hand_cards h JOIN cards c ON c.id = h.card_id GROUP BY h.player`
-  );
-  rows.forEach(r => out.push(r.line));
+  out.push('HOLE:');
+  for (const [p, cards] of Object.entries(grouped)) {
+    out.push(`  P${p}: ${cards.join(' ')}`);
+  }
 
-  out.push('=== COMMUNITY ===');
-  rows = runQuery(db,
-    `SELECT GROUP_CONCAT(c.rank || c.suit, '  ') AS line
-     FROM community_cards cc JOIN cards c ON c.id = cc.card_id`
-  );
-  rows.forEach(r => out.push(r.line));
+  // Community — concise
+  const commCards = runQuery(db,
+    `SELECT c.rank, c.suit FROM community_cards cc JOIN cards c ON c.id = cc.card_id`
+  ).map(c => c.rank + c.suit);
+  out.push(`BOARD: ${commCards.join(' ')}`);
 
+  // Results — concise
   const rSQL = `WITH
   comm AS (SELECT card_id, ROW_NUMBER() OVER () - 1 AS ci FROM community_cards),
   hole AS (SELECT player, card_id, ROW_NUMBER() OVER (PARTITION BY player ORDER BY card_id) - 1 AS hi FROM hand_cards),
@@ -146,15 +149,16 @@ function play(players) {
     WHEN 6 THEN 'Flush' WHEN 5 THEN 'Straight' WHEN 4 THEN 'Three of a Kind'
     WHEN 3 THEN 'Two Pair' WHEN 2 THEN 'One Pair' WHEN 1 THEN 'High Card'
   END AS hand_name FROM pb)
-  SELECT line, o FROM (
-    SELECT '  Player ' || player || ' → ' || hand_name AS line, 1 AS o, hr, tb FROM hn
+  SELECT line FROM (
+    SELECT '  P' || player || ' → ' || hand_name AS line, 1 AS o, hr, tb FROM hn
     UNION ALL
-    SELECT * FROM (SELECT 'WINNER:  Player ' || player || ' → ' || hand_name, 2, hr, tb FROM hn ORDER BY hr DESC, tb DESC LIMIT 1)
+    SELECT * FROM (SELECT '🏆 P' || player || ' → ' || hand_name, 2, hr, tb FROM hn ORDER BY hr DESC, tb DESC LIMIT 1)
   ) ORDER BY o, hr DESC, tb DESC`;
 
   try {
-    rows = runQuery(db, rSQL);
-    rows.forEach(r => out.push(r.line));
+    const results = runQuery(db, rSQL);
+    out.push('RESULT:');
+    results.forEach(r => out.push(r.line));
   } catch(e) {
     out.push('Error: ' + e.message);
   }
