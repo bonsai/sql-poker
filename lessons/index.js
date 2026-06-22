@@ -742,7 +742,7 @@ async function freeMode() {
   header('フリーモード — ポーカーを遊ぶ');
 
   const db = new DatabaseSync(':memory:');
-  const sqlPath = join(__dirname, 'sql-poker.sql');
+  const sqlPath = join(__dirname, '..', 'sql-poker.sql');
   const fullSQL = readFileSync(sqlPath, 'utf8');
 
   exec(db, fullSQL.match(/CREATE TABLE cards[\s\S]*?;/)[0]);
