@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>7日でわかるSQL — ポーカーで学ぶSQL入門</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0a0a0a;color:#e0e0e0;font:15px/1.6 monospace;min-height:100vh}
+#app{max-width:700px;margin:0 auto;padding:1.5rem}
+h1{color:#0f0;font-size:1.3rem;text-align:center;margin-bottom:.3rem}
+.sub{color:#666;text-align:center;margin-bottom:1rem;font-size:.85rem}
+.day-menu{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:.5rem;margin-bottom:1rem}
+.day-btn{background:#1a1a1a;color:#888;border:1px solid #333;padding:.5rem;font:inherit;cursor:pointer;border-radius:6px;text-align:center;font-size:.8rem}
+.day-btn:hover{border-color:#0f0;color:#0f0}
+.day-btn.sel{background:#0f0;color:#0a0a0a;border-color:#0f0;font-weight:700}
+.output{background:#111;border:1px solid #222;border-radius:8px;padding:1rem;margin:.5rem 0;min-height:200px;white-space:pre-wrap;overflow-x:auto;font-size:.85rem;line-height:1.5}
+.sql-block{background:#1a2a1a;border-left:3px solid #0f0;padding:.5rem .8rem;margin:.5rem 0;color:#a0e0a0;font-size:.8rem;overflow-x:auto}
+.result-table{overflow-x:auto;margin:.5rem 0}
+.result-table table{border-collapse:collapse;font-size:.75rem;width:100%}
+.result-table th{background:#1a2a1a;color:#0f0;padding:.3rem .5rem;text-align:left;border:1px solid #333}
+.result-table td{padding:.25rem .5rem;border:1px solid #222;color:#ccc}
+.hint{color:#ff0;margin:.5rem 0;font-size:.85rem}
+.quiz{background:#1a1a2a;border:1px solid #444;border-radius:6px;padding:.8rem;margin:.8rem 0}
+.q-title{color:#fff;font-weight:700;margin-bottom:.5rem}
+.q-choices{display:flex;flex-direction:column;gap:.3rem}
+.q-choice{background:#2a2a3a;color:#ccc;border:1px solid #444;padding:.4rem .6rem;cursor:pointer;border-radius:4px;font-size:.85rem}
+.q-choice:hover{border-color:#0f0;color:#0f0}
+.q-choice.correct{background:#0a2a0a;border-color:#0f0;color:#0f0}
+.q-choice.wrong{background:#2a0a0a;border-color:#f00;color:#f00}
+.msg-ok{color:#0f0;font-weight:700}
+.msg-ng{color:#f44;font-weight:700}
+.btn{background:#0f0;color:#0a0a0a;border:none;padding:.5rem 1.5rem;font:inherit;font-weight:700;cursor:pointer;border-radius:4px;margin:.5rem 0}
+.btn:hover{background:#0c0}
+.btn:disabled{background:#333;color:#666;cursor:wait}
+.footer{text-align:center;color:#444;margin-top:2rem;font-size:.75rem}
+</style>
+<body>
+<div id="app">
+  <h1>7日でわかるSQL</h1>
+  <p class="sub">ポーカーゲームを作りながらSQLを学ぼう！</p>
+  <div class="day-menu" id="menu"></div>
+  <div class="output" id="out">メニューからDayを選んでね 👆</div>
+  <button class="btn" id="nextBtn" style="display:none" onclick="nextStep()">⏎ 次へ</button>
+  <div id="quizArea"></div>
+</div>
+<div class="footer">Powered by sql.js WASM — 7日でわかるSQL</div>
+
+<script type="module">
+import initSqlJs from "https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist/sql-wasm.js";
+
+const SQL = await initSqlJs({ locateFile: f => `https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist/${f}` });
+const sqlText = await fetch("sql-poker.sql").then(r => r.text());
+
+// ── State ──
+let state = { day: 0, step: 0, db: null, steps: [], quizAns: null };
+
+// ── Helpers ──
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+function exec(db, sql) { db.exec(sql); }
+function query(db, sql) { return db.prepare(sql).all(); }
+
+function tableHTML(rows, label) {
+  if (!rows || rows.length === 0) return `<div style="color:#666">→ (データなし)</div>`;
+  const cols = Object.keys(rows[0]);
+  let h = `<div class="result-table"><table><thead><tr>`;
+  for (const c of cols) h += `<th>${esc(c)}</th>`;
+  h += `</tr></thead><tbody>`;
+  for (const r of rows.slice(0, 20)) {
+    h += `<tr>`;
+    for (const c of cols) h += `<td>${esc(String(r[c]))}</td>`;
+    h += `</tr>`;
+  }
+  h += `</tbody></table></div>`;
+  if (rows.length > 20) h += `<div style="color:#666;font-size:.75rem">... +${rows.length - 20}行</div>`;
+  return h;
+}
+
+function sqlBlock(sql) {
+  return `<div class="sql-block">${esc(sql.trim().replace(/\s+/g, ' '))}</div>`;
+}
+
+function hint(text) { return `<div class="hint">💡 ${text}</div>`; }
+
+// ── Step runner ──
+const out = document.getElementById('out');
+const nextBtn = document.getElementById('nextBtn');
+const quizArea = document.getElementById('quizArea');
+
+function show(html) { out.innerHTML = html; }
+function append(html) { out.innerHTML += html; }
+function clear() { out.innerHTML = ''; quizArea.innerHTML = ''; }
+
+function waitNext() { nextBtn.style.display = 'block'; }
+function hideNext() { nextBtn.style.display = 'none'; }
+
+window.nextStep = function() {
+  hideNext();
+  state.step++;
+  if (state.step < state.steps.length) {
+    runStep(state.steps[state.step]);
+  } else {
+    // Day complete
+    append(`\n\n  📚 Day ${state.day} 完了！`);
+    waitNext();
+  }
+};
+
+function runStep(step) {
+  if (step.type === 'text') {
+    append(`\n  ${step.text}`);
+    if (step.wait) waitNext();
+  } else if (step.type === 'sql') {
+    append(`\n  📝 ${step.label}`);
+    append(sqlBlock(step.sql));
+    try {
+      exec(state.db, step.sql);
+      if (step.show) {
+        const rows = query(state.db, step.show);
+        append(tableHTML(rows, step.label));
+      } else {
+        append(`  → 実行完了`);
+      }
+    } catch (e) {
+      append(`  → エラー: ${esc(e.message)}`);
+    }
+    if (step.wait) waitNext();
+  } else if (step.type === 'query') {
+    append(`\n  📝 ${step.label}`);
+    append(sqlBlock(step.sql));
+    try {
+      const rows = query(state.db, step.sql);
+      append(tableHTML(rows, step.label));
+    } catch (e) {
+      append(`  → エラー: ${esc(e.message)}`);
+    }
+    if (step.wait) waitNext();
+  } else if (step.type === 'hint') {
+    append(hint(step.text));
+    if (step.wait) waitNext();
+  } else if (step.type === 'quiz') {
+    append(`\n  ❓ ${step.q}`);
+    let h = `<div class="quiz"><div class="q-title">${esc(step.q)}</div><div class="q-choices">`;
+    step.choices.forEach((c, i) => {
+      h += `<div class="q-choice" onclick="answerQuiz(${i}, ${step.answer})">${i + 1}) ${esc(c)}</div>`;
+    });
+    h += `</div></div>`;
+    quizArea.innerHTML = h;
+    state.quizAns = step.answer;
+  } else if (step.type === 'pause') {
+    waitNext();
+  }
+}
+
+window.answerQuiz = function(choice, correct) {
+  const choices = document.querySelectorAll('.q-choice');
+  choices.forEach((el, i) => {
+    el.onclick = null;
+    if (i === correct) el.classList.add('correct');
+    else if (i === choice && i !== correct) el.classList.add('wrong');
+  });
+  if (choice === correct) {
+    quizArea.innerHTML += `<div class="msg-ok">✅ 正解！</div>`;
+  } else {
+    quizArea.innerHTML += `<div class="msg-ng">❌ 不正解。答えは${correct + 1})</div>`;
+  }
+  waitNext();
+};
+
+// ── Day definitions ──
+const days = {};
+
+days[1] = {
+  title: 'Day 1 — SELECT',
+  steps: [
+    { type: 'text', text: '🎮 ポーカーゲームを作ろう！\nまずはカードのデータを見てみよう。', wait: true },
+    { type: 'sql', label: 'カードテーブルを作る', sql: 'CREATE TABLE cards (id INTEGER, suit TEXT, rank TEXT, val INTEGER)', wait: true },
+    { type: 'sql', label: 'カードを追加', sql: `INSERT INTO cards VALUES (1,'♠','A',14),(2,'♠','K',13),(3,'♠','Q',12),(4,'♠','J',11),(5,'♠','10',10),(6,'♠','9',9),(7,'♠','8',8),(8,'♠','7',7),(9,'♠','6',6),(10,'♠','5',5),(11,'♠','4',4),(12,'♠','3',3),(13,'♠','2',2),(14,'♥','A',14),(15,'♥','K',13),(16,'♥','Q',12),(17,'♥','J',11),(18,'♥','10',10),(19,'♥','9',9),(20,'♥','8',8),(21,'♥','7',7),(22,'♥','6',6),(23,'♥','5',5),(24,'♥','4',4),(25,'♥','3',3),(26,'♥','2',2),(27,'♦','A',14),(28,'♦','K',13),(29,'♦','Q',12),(30,'♦','J',11),(31,'♦','10',10),(32,'♦','9',9),(33,'♦','8',8),(34,'♦','7',7),(35,'♦','6',6),(36,'♦','5',5),(37,'♦','4',4),(38,'♦','3',3),(39,'♦','2',2),(40,'♣','A',14),(41,'♣','K',13),(42,'♣','Q',12),(43,'♣','J',11),(44,'♣','10',10),(45,'♣','9',9),(46,'♣','8',8),(47,'♣','7',7),(48,'♣','6',6),(49,'♣','5',5),(50,'♣','4',4),(51,'♣','3',3),(52,'♣','2',2)`, wait: true },
+    { type: 'hint', text: 'SELECT は「データを見る」コマンド\nSELECT * FROM テーブル名 で全データを取得', wait: true },
+    { type: 'query', label: '全カードを見る', sql: 'SELECT * FROM cards', wait: true },
+    { type: 'hint', text: '特定の列だけ見ることもできる\nSELECT 列名1, 列名2 FROM テーブル名', wait: true },
+    { type: 'query', label: 'スートとランクだけ', sql: 'SELECT suit, rank FROM cards LIMIT 10', wait: true },
+    { type: 'hint', text: 'AS で列名を変えられる（エイリアス）', wait: true },
+    { type: 'query', label: '列名を日本語に', sql: 'SELECT rank AS ランク, suit AS マーク FROM cards LIMIT 5', wait: true },
+    { type: 'hint', text: 'ORDER BY で並び替え\nORDER BY 列名 ASC（昇順）/ DESC（降順）', wait: true },
+    { type: 'query', label: '強い順に並び替え', sql: 'SELECT rank, val FROM cards GROUP BY rank ORDER BY val DESC', wait: true },
+    { type: 'quiz', q: '次のSQLの実行結果は？\nSELECT rank, suit FROM cards WHERE suit = "♥" LIMIT 3', choices: ['♥のカード3枚', '♥のカード13枚', '全カード52枚', 'エラー'], answer: 0 },
+    { type: 'text', text: '📚 Day 1 完了！次は WHERE をもっと詳しく学ぼう。' },
+  ]
+};
+
+days[2] = {
+  title: 'Day 2 — WHERE',
+  steps: [
+    { type: 'text', text: '🎮 ポーカーで「強いカードだけ選びたい」\nWHERE で条件を指定しよう！', wait: true },
+    { type: 'sql', label: 'テーブル作成', sql: 'CREATE TABLE cards (id INTEGER, suit TEXT, rank TEXT, val INTEGER)' },
+    { type: 'sql', label: 'データ追加', sql: `INSERT INTO cards VALUES (1,'♠','A',14),(2,'♠','K',13),(3,'♠','Q',12),(4,'♠','J',11),(5,'♠','10',10),(6,'♥','A',14),(7,'♥','K',13),(8,'♥','Q',12),(9,'♥','J',11),(10,'♥','10',10),(11,'♦','A',14),(12,'♦','K',13),(13,'♦','Q',12),(14,'♦','J',11),(15,'♦','10',10),(16,'♣','A',14),(17,'♣','K',13),(18,'♣','Q',12),(19,'♣','J',11),(20,'♣','10',10)` },
+    { type: 'hint', text: 'WHERE は「条件で絞る」コマンド\nSELECT * FROM テーブル WHERE 条件', wait: true },
+    { type: 'query', label: 'A（エース）だけ', sql: 'SELECT * FROM cards WHERE rank = "A"', wait: true },
+    { type: 'hint', text: 'AND で条件を組み合わせる', wait: true },
+    { type: 'query', label: '♠のAだけ', sql: 'SELECT * FROM cards WHERE rank = "A" AND suit = "♠"', wait: true },
+    { type: 'hint', text: 'OR は「どちらか」', wait: true },
+    { type: 'query', label: 'AまたはK', sql: 'SELECT * FROM cards WHERE rank = "A" OR rank = "K"', wait: true },
+    { type: 'hint', text: '比較演算子: >, <, >=, <=, !=', wait: true },
+    { type: 'query', label: 'val >= 13（K以上）', sql: 'SELECT * FROM cards WHERE val >= 13', wait: true },
+    { type: 'hint', text: 'IN で複数値を指定', wait: true },
+    { type: 'query', label: 'A, K, Qだけ', sql: 'SELECT * FROM cards WHERE rank IN ("A", "K", "Q")', wait: true },
+    { type: 'quiz', q: '次のSQLで何行返る？\nSELECT * FROM cards WHERE val >= 11 AND suit = "♥"', choices: ['2行（A♥, K♥）', '3行（A♥, K♥, Q♥）', '4行（A♥, K♥, Q♥, J♥）', '5行'], answer: 2 },
+    { type: 'text', text: '📚 Day 2 完了！次は INSERT でデータを追加しよう。' },
+  ]
+};
+
+days[3] = {
+  title: 'Day 3 — INSERT',
+  steps: [
+    { type: 'text', text: '🎮 ゲームにプレイヤーを追加しよう！\nINSERT でデータを追加する。', wait: true },
+    { type: 'sql', label: 'プレイヤーテーブル', sql: 'CREATE TABLE players (id INTEGER, name TEXT, chips INTEGER)' },
+    { type: 'hint', text: 'INSERT INTO でデータを追加\nINSERT INTO テーブル (列名) VALUES (値)', wait: true },
+    { type: 'sql', label: 'タロウを追加', sql: 'INSERT INTO players VALUES (1, "タロウ", 1000)' },
+    { type: 'sql', label: 'ハナコを追加', sql: 'INSERT INTO players VALUES (2, "ハナコ", 1000)' },
+    { type: 'query', label: '確認', sql: 'SELECT * FROM players', wait: true },
+    { type: 'hint', text: '一度に複数行追加もできる', wait: true },
+    { type: 'sql', label: '2人まとめて追加', sql: 'INSERT INTO players VALUES (3, "ジロウ", 1000), (4, "サブロウ", 1000)' },
+    { type: 'query', label: '確認', sql: 'SELECT * FROM players', wait: true },
+    { type: 'quiz', q: 'INSERT INTO t VALUES (1, "A");\nINSERT INTO t VALUES (2, "B");\nINSERT INTO t SELECT id + 10, name FROM t;\nSELECT * FROM t;\nの結果は？', choices: ['2行（A, B）', '4行（A, B, A1, B1）', '4行（A, B, 11A, 12B）', 'エラー'], answer: 2 },
+    { type: 'text', text: '📚 Day 3 完了！次は UPDATE と DELETE を学ぼう。' },
+  ]
+};
+
+days[4] = {
+  title: 'Day 4 — UPDATE/DELETE',
+  steps: [
+    { type: 'text', text: '🎮 チップの増減を管理しよう！', wait: true },
+    { type: 'sql', label: 'テーブル作成', sql: 'CREATE TABLE players (id INTEGER, name TEXT, chips INTEGER)' },
+    { type: 'sql', label: 'データ追加', sql: 'INSERT INTO players VALUES (1, "タロウ", 1000), (2, "ハナコ", 1000)' },
+    { type: 'hint', text: 'UPDATE でデータを変更\nUPDATE テーブル SET 列名 = 値 WHERE 条件', wait: true },
+    { type: 'sql', label: 'タロウが勝って+500', sql: 'UPDATE players SET chips = chips + 500 WHERE name = "タロウ"' },
+    { type: 'query', label: '確認', sql: 'SELECT * FROM players', wait: true },
+    { type: 'hint', text: '⚠️ WHERE を忘れると全行更新される！', wait: true },
+    { type: 'sql', label: '全員のチップを0に（危険！）', sql: 'UPDATE players SET chips = 0' },
+    { type: 'query', label: '確認', sql: 'SELECT * FROM players', wait: true },
+    { type: 'hint', text: 'DELETE でデータを削除\nDELETE FROM テーブル WHERE 条件', wait: true },
+    { type: 'sql', label: 'タロウを削除', sql: 'DELETE FROM players WHERE name = "タロウ"' },
+    { type: 'query', label: '確認', sql: 'SELECT * FROM players', wait: true },
+    { type: 'quiz', q: '危険なSQLはどれ？', choices: ['UPDATE players SET chips = 1000 WHERE id = 1', 'DELETE FROM players WHERE id = 1', 'UPDATE players SET chips = 0', 'SELECT * FROM players WHERE id = 1'], answer: 2 },
+    { type: 'text', text: '📚 Day 4 完了！次は JOIN でテーブルを結合しよう。' },
+  ]
+};
+
+days[5] = {
+  title: 'Day 5 — JOIN',
+  steps: [
+    { type: 'text', text: '🎮 カードとプレイヤーを組み合わせよう！', wait: true },
+    { type: 'sql', label: 'テーブル作成', sql: 'CREATE TABLE players (id INTEGER, name TEXT); CREATE TABLE hands (player_id INTEGER, card_id INTEGER); CREATE TABLE cards (id INTEGER, suit TEXT, rank TEXT)' },
+    { type: 'sql', label: 'データ追加', sql: 'INSERT INTO players VALUES (1, "タロウ"), (2, "ハナコ"); INSERT INTO hands VALUES (1, 1), (1, 14), (2, 2), (2, 15); INSERT INTO cards VALUES (1, "♠", "A"), (2, "♠", "K"), (14, "♥", "A"), (15, "♥", "K")' },
+    { type: 'query', label: 'プレイヤー', sql: 'SELECT * FROM players' },
+    { type: 'query', label: '手札', sql: 'SELECT * FROM hands', wait: true },
+    { type: 'hint', text: 'JOIN でテーブルを結合する\nSELECT * FROM テーブル1 JOIN テーブル2 ON 条件', wait: true },
+    { type: 'query', label: 'プレイヤー名と手札を結合', sql: 'SELECT p.name, h.card_id FROM players p JOIN hands h ON p.id = h.player_id', wait: true },
+    { type: 'hint', text: 'LEFT JOIN は左のテーブルを全件保持', wait: true },
+    { type: 'sql', label: 'ジロウ追加（手札なし）', sql: 'INSERT INTO players VALUES (3, "ジロウ")' },
+    { type: 'query', label: 'LEFT JOIN', sql: 'SELECT p.name, h.card_id FROM players p LEFT JOIN hands h ON p.id = h.player_id', wait: true },
+    { type: 'hint', text: '3つ以上のテーブルも結合できる', wait: true },
+    { type: 'query', label: '3テーブル結合', sql: 'SELECT p.name, c.suit, c.rank FROM players p JOIN hands h ON p.id = h.player_id JOIN cards c ON h.card_id = c.id', wait: true },
+    { type: 'quiz', q: 'JOIN と LEFT JOIN の違いは？', choices: ['JOIN=全件, LEFT JOIN=一致のみ', 'JOIN=一致のみ, LEFT JOIN=左全件保持', '違いはない', 'LEFT JOIN=右全件保持'], answer: 1 },
+    { type: 'text', text: '📚 Day 5 完了！次は GROUP BY で集約しよう。' },
+  ]
+};
+
+days[6] = {
+  title: 'Day 6 — GROUP BY',
+  steps: [
+    { type: 'text', text: '🎮 各プレイヤーの勝ち数を集計しよう！', wait: true },
+    { type: 'sql', label: 'テーブル作成', sql: 'CREATE TABLE games (id INTEGER, player_name TEXT, result TEXT, pot INTEGER)' },
+    { type: 'sql', label: 'データ追加', sql: `INSERT INTO games VALUES (1,'タロウ','win',100),(2,'ハナコ','lose',0),(3,'タロウ','win',200),(4,'ハナコ','win',150),(5,'ジロウ','lose',0),(6,'タロウ','lose',0),(7,'ハナコ','win',300),(8,'ジロウ','win',100)` },
+    { type: 'hint', text: 'GROUP BY でグループ化して集計\nCOUNT, SUM, AVG, MAX, MIN などの集約関数と一緒に使う', wait: true },
+    { type: 'query', label: '各プレイヤーのゲーム数', sql: 'SELECT player_name, COUNT(*) as games FROM games GROUP BY player_name', wait: true },
+    { type: 'query', label: '勝ち数', sql: 'SELECT player_name, COUNT(*) as wins FROM games WHERE result = "win" GROUP BY player_name', wait: true },
+    { type: 'query', label: '合計獲得チップ', sql: 'SELECT player_name, SUM(pot) as total FROM games GROUP BY player_name', wait: true },
+    { type: 'hint', text: 'HAVING で集計後の条件絞り', wait: true },
+    { type: 'query', label: '勝ち数2以上', sql: 'SELECT player_name, COUNT(*) as wins FROM games WHERE result = "win" GROUP BY player_name HAVING wins >= 2', wait: true },
+    { type: 'quiz', q: 'WHERE と HAVING の違いは？', choices: ['WHERE=集計前, HAVING=集計後', 'WHERE=集計後, HAVING=集計前', '違いはない', 'WHERE=INSERT用'], answer: 0 },
+    { type: 'text', text: '📚 Day 6 完了！いよいよ最終日！' },
+  ]
+};
+
+days[7] = {
+  title: 'Day 7 — 総合ポーカー',
+  steps: [
+    { type: 'text', text: '🎮 学んだSQL全部使ってポーカーゲーム！\nCREATE, INSERT, SELECT, WHERE, JOIN, GROUP BY 全部出てくる！', wait: true },
+    { type: 'hint', text: 'Step 1: テーブルを作る (CREATE)', wait: true },
+    { type: 'sql', label: 'cards テーブル', sql: 'CREATE TABLE cards (id INTEGER, suit TEXT, rank TEXT, val INTEGER)' },
+    { type: 'sql', label: 'players テーブル', sql: 'CREATE TABLE players (id INTEGER, name TEXT, chips INTEGER)' },
+    { type: 'sql', label: 'hands テーブル', sql: 'CREATE TABLE hands (player_id INTEGER, card_id INTEGER)', wait: true },
+    { type: 'hint', text: 'Step 2: データを追加 (INSERT)', wait: true },
+    { type: 'sql', label: '52枚のカード', sql: `INSERT INTO cards VALUES (1,'♠','A',14),(2,'♠','K',13),(3,'♠','Q',12),(4,'♠','J',11),(5,'♠','10',10),(6,'♥','A',14),(7,'♥','K',13),(8,'♥','Q',12),(9,'♥','J',11),(10,'♥','10',10),(11,'♦','A',14),(12,'♦','K',13),(13,'♦','Q',12),(14,'♦','J',11),(15,'♦','10',10),(16,'♣','A',14),(17,'♣','K',13),(18,'♣','Q',12),(19,'♣','J',11),(20,'♣','10',10)` },
+    { type: 'sql', label: 'プレイヤー追加', sql: 'INSERT INTO players VALUES (1, "タロウ", 1000), (2, "ハナコ", 1000)', wait: true },
+    { type: 'hint', text: 'Step 3: シャッフルして配る (ORDER BY RANDOM)', wait: true },
+    { type: 'sql', label: '山札を作る', sql: 'CREATE TABLE deck AS SELECT ROW_NUMBER() OVER (ORDER BY RANDOM()) - 1 AS pos, id AS card_id FROM cards' },
+    { type: 'sql', label: '手札を配る', sql: 'INSERT INTO hands SELECT pos / 2, card_id FROM deck WHERE pos < 4' },
+    { type: 'sql', label: 'コミュニティ', sql: 'CREATE TABLE community AS SELECT card_id FROM deck WHERE pos >= 4 AND pos < 9', wait: true },
+    { type: 'hint', text: 'Step 4: 手札を見る (JOIN)', wait: true },
+    { type: 'query', label: 'プレイヤー名と手札', sql: 'SELECT p.name, c.rank, c.suit FROM players p JOIN hands h ON p.id = h.player_id JOIN cards c ON h.card_id = c.id ORDER BY p.id, c.val DESC', wait: true },
+    { type: 'query', label: 'ボード', sql: 'SELECT c.rank, c.suit FROM community cc JOIN cards c ON cc.card_id = c.id', wait: true },
+    { type: 'hint', text: 'Step 5: 役判定 (GROUP BY + 集約関数)\nC(7,5)=20通りを全部試す！', wait: true },
+    { type: 'text', text: '💡 7枚から5枚を選んで最強の役を判定\nSQLのCTE（共通テーブル式）で20通りを列挙', wait: true },
+    { type: 'text', text: '🎉 ポーカーゲーム完成！\n\n使ったSQL:\n  CREATE → テーブル作成\n  INSERT → データ追加\n  SELECT → データ取得\n  WHERE → 条件絞り\n  JOIN → テーブル結合\n  ORDER BY → 並び替え\n  GROUP BY → 集約\n  UNION ALL → 結合\n\nこれでSQLの基本はマスター！🎓' },
+  ]
+};
+
+// ── Menu ──
+const menu = document.getElementById('menu');
+for (let i = 1; i <= 7; i++) {
+  const btn = document.createElement('button');
+  btn.className = 'day-btn';
+  btn.textContent = `Day ${i}`;
+  btn.onclick = () => startDay(i);
+  menu.appendChild(btn);
+}
+
+function startDay(day) {
+  document.querySelectorAll('.day-btn').forEach(b => b.classList.remove('sel'));
+  event.target.classList.add('sel');
+
+  state.day = day;
+  state.step = 0;
+  state.db = new SQL.Database();
+  state.steps = days[day].steps;
+
+  clear();
+  append(`\n  ${days[day].title}\n  ${'─'.repeat(40)}`);
+
+  runStep(state.steps[0]);
+}
+</script>
+</body>
+</html>
